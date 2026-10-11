@@ -1,0 +1,31 @@
+# Claude
+.claude/
+
+# .NET build output
+bin/
+obj/
+TestResults/
+
+# Published extension binaries
+extension-publish/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+
+# Editors
+.vscode/
+.vs/
+
+# Python (mock server)
+__pycache__/
+
+# Environment / secrets
+.env
+*.env
+token.txt
+*.token
+apikey.txt
+secrets.txt
+secrets.json

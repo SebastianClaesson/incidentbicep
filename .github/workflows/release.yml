@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet test bicep-ext-incidentio.sln --configuration Release
+
+      - name: Install Bicep CLI
+        run: |
+          curl -Lo bicep https://github.com/Azure/bicep/releases/download/v0.41.2/bicep-linux-x64
+          chmod +x bicep && sudo mv bicep /usr/local/bin/bicep
+
+      - name: Publish binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for rid in win-x64 linux-x64 osx-arm64; do
+            dotnet publish src/bicep-ext-incidentio.csproj --configuration Release -r $rid -p:Version=$VERSION -o ./release/$rid
+          done
+
+      - name: Package Bicep extension
+        run: |
+          bicep publish-extension \
+            --bin-win-x64 ./release/win-x64/bicep-ext-incidentio.exe \
+            --bin-linux-x64 ./release/linux-x64/bicep-ext-incidentio \
+            --bin-osx-arm64 ./release/osx-arm64/bicep-ext-incidentio \
+            --target ./release/bicep-ext-incidentio.tgz --force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/bicep-ext-incidentio.tgz

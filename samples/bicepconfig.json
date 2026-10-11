@@ -1,0 +1,9 @@
+{
+  "experimentalFeaturesEnabled": {
+    "localDeploy": true
+  },
+  "extensions": {
+    "incidentio": "../extension-publish/bicep-ext-incidentio"
+  },
+  "implicitExtensions": []
+}

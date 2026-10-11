@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore bicep-ext-incidentio.sln
+
+      - name: Build
+        run: dotnet build bicep-ext-incidentio.sln --configuration Release --no-restore
+
+      - name: Unit tests
+        run: dotnet test bicep-ext-incidentio.sln --configuration Release --no-build --verbosity normal
+
+      - name: Install Bicep CLI
+        run: |
+          curl -Lo bicep https://github.com/Azure/bicep/releases/download/v0.41.2/bicep-linux-x64
+          chmod +x bicep && sudo mv bicep /usr/local/bin/bicep
+          bicep --version
+
+      - name: Publish extension (linux-x64)
+        run: |
+          dotnet publish src/bicep-ext-incidentio.csproj --configuration Release -r linux-x64 -o ./extension-publish/bin/linux-x64
+          bicep publish-extension --bin-linux-x64 ./extension-publish/bin/linux-x64/bicep-ext-incidentio --target ./extension-publish/bicep-ext-incidentio --force
+
+      - name: Validate samples
+        run: |
+          for f in samples/*/main.bicep; do echo "bicep build $f"; bicep build "$f" --stdout > /dev/null; done
+
+      - name: End-to-end against mock (deploy twice, must be idempotent)
+        env:
+          INCIDENT_IO_BASE_URL: http://127.0.0.1:8787
+          INCIDENT_IO_API_KEY: test-key
+        run: |
+          python3 tools/mock-server/mock_incidentio.py 8787 &
+          sleep 2
+          for sample in basic catalog; do
+            curl -s -X POST http://127.0.0.1:8787/_reset > /dev/null
+            bicep local-deploy samples/$sample/main.bicepparam
+            first=$(curl -s http://127.0.0.1:8787/_state | python3 -c "import json,sys; s=json.load(sys.stdin)['state']; print(sum(len(v) for v in s.values()))")
+            bicep local-deploy samples/$sample/main.bicepparam
+            second=$(curl -s http://127.0.0.1:8787/_state | python3 -c "import json,sys; s=json.load(sys.stdin)['state']; print(sum(len(v) for v in s.values()))")
+            echo "$sample: $first resources after run 1, $second after run 2"
+            test "$first" = "$second"
+          done
