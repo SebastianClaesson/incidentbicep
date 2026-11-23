@@ -52,7 +52,7 @@ jobs:
         run: |
           python3 tools/mock-server/mock_incidentio.py 8787 &
           sleep 2
-          for sample in basic catalog; do
+          for sample in basic catalog oncall alerts; do
             curl -s -X POST http://127.0.0.1:8787/_reset > /dev/null
             bicep local-deploy samples/$sample/main.bicepparam
             first=$(curl -s http://127.0.0.1:8787/_state | python3 -c "import json,sys; s=json.load(sys.stdin)['state']; print(sum(len(v) for v in s.values()))")

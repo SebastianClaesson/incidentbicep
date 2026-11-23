@@ -150,6 +150,153 @@ resource affectedServices 'CustomField' = {
   emoji: 'gear'
 }""",
     },
+    "User": {
+        "summary": "Look up a user by email to get their ID (Terraform: `data \"incident_user\"`). Read-only: use `existing`.",
+        "api": "/v2/users",
+        "found_by": "`email` (case-insensitive)",
+        "notes": ["Users can't be created or changed by Bicep. Declaring one without `existing` fails with `ReadOnlyResource`."],
+        "example": """resource alice 'User' existing = {
+  email: 'alice@example.com'
+}
+
+output aliceId string = alice.id""",
+    },
+    "Schedule": {
+        "summary": "An on-call schedule. Its rotations are separate `ScheduleRotation` resources, as in Terraform v7.",
+        "api": "/v3/schedules (the endpoint the Terraform provider uses; not in the public API docs)",
+        "found_by": "`name` (case-insensitive)",
+        "notes": ["`timezone` can't be changed after creation; rotations are anchored to it."],
+        "example": """resource platform 'Schedule' = {
+  name: 'Platform on-call'
+  timezone: 'Europe/Stockholm'
+  holidaysPublicConfig: {
+    countryCodes: ['SE']
+  }
+}""",
+    },
+    "ScheduleRotation": {
+        "summary": "A rotation on a schedule: who takes turns being on call, and the cadence they hand over on.",
+        "api": "/v3/schedules/{scheduleId}/rotations (the endpoint the Terraform provider uses; not in the public API docs)",
+        "found_by": "`scheduleId` + `name` (case-insensitive)",
+        "notes": [
+            "**Unchanged rotations are never written.** A write with `rollout` schedules a new version of the rotation even when nothing changed, so the extension compares the desired rotation with the live one first. Working intervals compare as a set, but user order matters.",
+            "`rollout` only applies when the rotation changes: `immediate` replaces the line-up now, `after_current_shift` lets the current shift finish, and `after_full_rotation` waits for a full cycle.",
+            "`firstIntervalStartsAt` can't change in the same deployment as a `rollout`. Change it first with `rollout` unset, then make the line-up change.",
+            "`users` takes user IDs, which you can look up with `User` existing. Use `NOBODY` for a slot with nobody in it; an empty list is rejected.",
+        ],
+        "example": """resource primary 'ScheduleRotation' = {
+  scheduleId: platform.id
+  name: 'Primary'
+  firstIntervalStartsAt: '2026-01-05T08:00:00Z'
+  handovers: [
+    { interval: 1, intervalType: 'weekly' }
+  ]
+  users: [alice.id, bob.id]
+  rollout: 'after_current_shift'
+}""",
+    },
+    "EscalationPath": {
+        "summary": "An escalation path, written as a flat map of named node sequences (the Terraform v7 shape).",
+        "api": "/v2/escalation_paths",
+        "found_by": "`name` (case-insensitive)",
+        "notes": [
+            "Each sequence runs its nodes in order. A `branch`, which must be the last node, names the sequences to continue down. Without one, the path ends after the last node.",
+            "A `loop` can only go back to the path's first node or to a branch it sits under. It must be last in its sequence, or be followed by a single `escalationPath` handoff.",
+            "Node ids are optional. An id is derived from the node's position (`<sequence>/<index>`), so it stays stable. Set `id` only on nodes that a loop goes back to.",
+            "`ackMode` defaults to `first`, as in Terraform v7: the first person to acknowledge cancels everyone else's page on that level. Set `ackMode: 'all'` to keep the old behaviour.",
+            "Validation follows the Terraform provider. It rejects unknown or unreachable sequences, cycles, a sequence branched to twice, and nodes that set zero or several blocks, and it reports every problem at once.",
+            "When read with `existing`, sequence names are recovered from derived node ids. If that isn't possible, the start is called `main` and branch targets `<sequence>_then` and `<sequence>_else`.",
+        ],
+        "example": """resource platform 'EscalationPath' = {
+  name: 'Platform'
+  start: 'main'
+  sequences: {
+    main: {
+      nodes: [
+        {
+          id: 'start'
+          branch: {
+            if: { workingHoursActive: 'office' }
+            then: 'in_hours'
+            else: 'out_of_hours'
+          }
+        }
+      ]
+    }
+    in_hours: {
+      nodes: [
+        { level: { targets: [{ type: 'schedule', id: schedule.id, urgency: 'high', scheduleMode: 'currently_on_call' }], timeToAckSeconds: 300 } }
+        { delay: { delaySeconds: 120 } }
+        { loop: { backTo: 'start', times: 2 } }
+      ]
+    }
+    out_of_hours: {
+      nodes: [
+        { level: { targets: [{ type: 'user', id: alice.id, urgency: 'low' }], timeToAckSeconds: 900 } }
+        { escalationPath: { escalationPathId: fallback.id } }
+      ]
+    }
+  }
+  workingHours: [
+    {
+      id: 'office'
+      name: 'Office hours'
+      timezone: 'Europe/Stockholm'
+      weekdayIntervals: [for day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday']: { weekday: day, startTime: '08:00', endTime: '18:00' }]
+    }
+  ]
+}""",
+    },
+    "AlertSource": {
+        "summary": "An alert source: where alerts come from and how their title, description and other fields are derived.",
+        "api": "/v3/alert_sources (the endpoint the Terraform provider uses; not in the public API docs)",
+        "found_by": "`name` (case-insensitive)",
+        "notes": [
+            "`sourceType` can't be changed after creation.",
+            "Bindings accept the Terraform shorthands `valueLiteral`, `valueReference`, `values` and `expressionRef`, or the full `value` / `arrayValue`. Set exactly one.",
+            "`expressions` uses the API shape (`reference`, `rootReference`, `operations`, `elseBranch`). Terraform's `named_expression` blocks, with their `fallback`/`if`/`else_if` shorthand, aren't supported yet.",
+            "`secretToken` is a sensitive output. Pass it straight to where it's needed, such as a Key Vault secret, rather than printing it.",
+            "Alert source attributes (Terraform's `incident_alert_source_attribute`) aren't supported yet.",
+        ],
+        "example": """resource httpSource 'AlertSource' = {
+  name: 'Platform HTTP alerts'
+  sourceType: 'http'
+  title: { valueReference: 'payload.title' }
+  description: { valueLiteral: '{{ payload.description }}' }
+  filterConditionGroups: [
+    {
+      conditions: [
+        { subject: 'payload.environment', operation: 'is_not', paramBindings: [{ valueLiteral: 'test' }] }
+      ]
+    }
+  ]
+}
+
+output alertEventsUrl string = httpSource.alertEventsUrl""",
+    },
+    "MaintenanceWindow": {
+        "summary": "A maintenance window that holds back matching alerts.",
+        "api": "/v1/maintenance_windows",
+        "found_by": "`name` (case-insensitive), ignoring archived windows",
+        "notes": [
+            "Window names should be unique among non-archived windows. More than one match fails with `AmbiguousMatch`.",
+            "`showInSidebar` defaults to `false`.",
+        ],
+        "example": """resource dbUpgrade 'MaintenanceWindow' = {
+  name: 'Database upgrade 2026-11'
+  startAt: '2026-11-14T22:00:00Z'
+  endAt: '2026-11-15T02:00:00Z'
+  leadId: alice.id
+  alertConditionGroups: [
+    {
+      conditions: [
+        { subject: 'alert.source', operation: 'one_of', paramBindings: [{ values: [httpSource.id] }] }
+      ]
+    }
+  ]
+  resolveOnEnd: true
+}""",
+    },
 }
 
 
@@ -204,6 +351,7 @@ def nested_objects(types, obj, seen):
         if t["$type"] == "ObjectType" and "properties" in t and t["properties"] and t["name"] not in seen:
             seen.add(t["name"])
             yield t
+            yield from nested_objects(types, t, seen)  # escalation paths nest several levels deep
 
 
 def main():

@@ -30,7 +30,8 @@ public class TypeDefinitionTests
         string[] expected =
         [
             "Severity", "IncidentRole", "IncidentStatus", "CustomField", "CustomFieldOption",
-            "CatalogType", "CatalogEntry", "AlertAttribute"
+            "CatalogType", "CatalogEntry", "AlertAttribute",
+            "User", "Schedule", "ScheduleRotation", "EscalationPath", "AlertSource", "MaintenanceWindow"
         ];
         foreach (var name in expected)
             Assert.Contains(resources, r => r.StartsWith(name, StringComparison.Ordinal));

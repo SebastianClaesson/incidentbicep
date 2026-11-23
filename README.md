@@ -24,8 +24,31 @@ Declare severities, incident roles, statuses, custom fields, catalog types and e
 | Catalog type | `CatalogType` | `/v3/catalog_types` | `name` | Optional `attributes` manages the schema |
 | Catalog entry | `CatalogEntry` | `/v3/catalog_entries` | `catalogTypeId` + `externalId` (or `name`) | Attribute values by name or ID |
 | Alert attribute | `AlertAttribute` | `/v2/alert_attributes` | `name` | |
+| Alert source | `AlertSource` | `/v3/alert_sources` ¹ | `name` | `sourceType` is immutable; `secretToken` is a sensitive output |
+| Maintenance window | `MaintenanceWindow` | `/v1/maintenance_windows` | `name` (non-archived) | |
+| Schedule | `Schedule` | `/v3/schedules` ¹ | `name` | `timezone` is immutable |
+| Schedule rotation | `ScheduleRotation` | `/v3/schedules/{id}/rotations` ¹ | `scheduleId` + `name` | Supports `rollout`; unchanged rotations are never rewritten |
+| Escalation path | `EscalationPath` | `/v2/escalation_paths` | `name` | Terraform v7 `sequences` shape |
+| User (lookup only) | `User` | `/v2/users` | `email` | `existing` only |
+
+¹ These are the endpoints the official Terraform provider uses. They aren't in incident.io's public API docs; see [vulnerabilities.md](vulnerabilities.md).
 
 Every resource exposes a read-only `id` output. See the [wiki](wiki/Home.md) for full property references.
+
+### Compared with the Terraform provider
+
+Property names follow the [incident-io/incident](https://registry.terraform.io/providers/incident-io/incident/latest) Terraform provider (v7) in camelCase. A Terraform configuration translates nearly one-to-one: `time_to_ack_seconds` becomes `timeToAckSeconds`, `value_literal` becomes `valueLiteral`, and so on. Terraform data sources map to `existing` resources.
+
+| Terraform | Bicep | Notes |
+|---|---|---|
+| `incident_schedule` + `incident_schedule_rotation` | `Schedule` + `ScheduleRotation` | Same split and `rollout` semantics |
+| `incident_escalation_path` | `EscalationPath` | Same `start` and `sequences` shape and validation rules |
+| `incident_maintenance_window` | `MaintenanceWindow` | `force_destroy` not applicable (nothing is deleted) |
+| `incident_alert_source` | `AlertSource` | `expressions` uses the API shape, because `named_expression` sugar isn't supported yet |
+| `data "incident_user"` | `User` existing | Looked up by email |
+| `unlock_in_dashboard` | — | Not supported: Bicep-managed resources stay editable in the dashboard |
+
+Not yet covered: `alert_source_attribute`, `alert_route`, `escalation_path_template`, `schedule_replica`, `schedule_sync_*`, workflows, policies and the remaining resources (see [Adding a resource type](#adding-a-resource-type)).
 
 All resource types support `existing`, so you can reference things created in the UI, such as the built-in severities:
 
@@ -109,6 +132,8 @@ More samples:
 |---|---|
 | [`samples/basic`](samples/basic/main.bicep) | Severities, role, status, a select field with options (loop), and `existing` |
 | [`samples/catalog`](samples/catalog/main.bicep) | Two catalog types referencing each other, entries from a parameter array, and a catalog-backed custom field |
+| [`samples/oncall`](samples/oncall/main.bicep) | User lookups, a schedule with weekly and office-hours rotations, and escalation paths with a branch, loop and handoff |
+| [`samples/alerts`](samples/alerts/main.bicep) | HTTP and heartbeat alert sources with expressions and filters, and a maintenance window |
 
 ## Configuration
 
@@ -134,6 +159,7 @@ Deployments are **idempotent**: running the same file twice creates the resource
 - **Immutable fields fail loudly.** Changing a field the API can't update (such as `IncidentStatus.category` or `CustomField.fieldType`) fails the deployment with a clear message. The extension never ignores the change silently.
 - **The catalog schema is replaced as a whole.** When `attributes` is set on a `CatalogType`, attributes you don't list are removed. Existing attributes are matched by name, so their IDs and stored values survive. Leave out `attributes` to keep the schema unmanaged, for example when an external sync owns it.
 - **Catalog entry attribute values** can be keyed by attribute name or ID. Attributes you don't list are cleared. Leave out `attributeValues` entirely to leave the values untouched.
+- **Rotations skip no-op writes.** A rotation write with `rollout` schedules a new version even when nothing changed. So `ScheduleRotation` compares the desired rotation with the live one and only writes when something differs.
 - **Retries.** Rate-limited responses (`429`) and gateway errors are retried with backoff, honouring `Retry-After`. Transient network errors are retried for reads and updates. Creates (`POST`) are never retried after a network failure, because a retry could create a duplicate.
 
 ## What-if
@@ -159,14 +185,19 @@ The mock checks the extension's behavior, not incident.io's validation rules. Al
 ```
 src/
   Program.cs                         # Registers the extension and handlers
-  Models.cs                          # Resource types (C# classes → Bicep types)
+  Models.cs                          # Incident config and catalog types (C# classes → Bicep types)
+  ModelsOnCall.cs                    # User, Schedule, ScheduleRotation, EscalationPath
+  ModelsAlerting.cs                  # AlertSource (+ expressions), MaintenanceWindow
+  Engine.cs                          # Shared bindings/conditions + Terraform shorthands; no-op comparison
   IncidentIoClient.cs                # HTTP: auth, HTTPS check, retries, pagination, errors
   Handlers/
     IncidentIoResourceHandlerBase.cs # Find → create/update → outputs; 'existing' support
     SeverityHandler.cs ...           # ~8 lines each: API path + JSON keys
     CatalogTypeHandler.cs            # + schema management
     CatalogEntryHandler.cs           # + attribute name → ID resolution
-tests/                               # xUnit: schema generation, serialization, client, catalog logic
+    ScheduleRotationHandler.cs       # + nested path, rollout, skip unchanged writes
+    EscalationPathSequences.cs       # sequences ⇄ API tree, Terraform's validation rules
+tests/                               # xUnit: schema generation, serialization, client, catalog, engine, escalation paths
 samples/                             # Deployable examples
 tools/mock-server/                   # Local incident.io mock for end-to-end tests
 wiki/                                # Per-resource reference
@@ -179,7 +210,7 @@ wiki/                                # Per-resource reference
 3. Register it in `src/Program.cs` with `.WithResourceHandler<YourHandler>()`.
 4. Add the endpoint to the mock server, a sample, and a wiki page.
 
-**Candidates for later:** schedules, escalation paths, alert sources and routes, workflows, and incident templates. Their API payloads are deeply nested, so each needs careful modelling.
+**Candidates for later:** alert source attributes, alert routes, escalation path templates, schedule replicas and sync rules, workflows, incident forms and templates, and policies. The Terraform provider's schema (`internal/apischema/public-schema-v3-including-secret-endpoints.json` in [incident-io/terraform-provider-incident](https://github.com/incident-io/terraform-provider-incident)) is the best reference for payload shapes.
 
 ## Further reading
 

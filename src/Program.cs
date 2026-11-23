@@ -19,8 +19,15 @@ builder.Services
     // Catalog
     .WithResourceHandler<CatalogTypeHandler>()
     .WithResourceHandler<CatalogEntryHandler>()
+    // On-call
+    .WithResourceHandler<UserHandler>()
+    .WithResourceHandler<ScheduleHandler>()
+    .WithResourceHandler<ScheduleRotationHandler>()
+    .WithResourceHandler<EscalationPathHandler>()
     // Alerts
-    .WithResourceHandler<AlertAttributeHandler>();
+    .WithResourceHandler<AlertAttributeHandler>()
+    .WithResourceHandler<AlertSourceHandler>()
+    .WithResourceHandler<MaintenanceWindowHandler>();
 
 var app = builder.Build();
 app.MapBicepExtension();

@@ -68,7 +68,38 @@ The API keys `attribute_values` by attribute ID, which isn't known until deploy 
 - Retries cover 429, 502, 503 and 504, with `Retry-After` honoured and capped at 30s, for up to 5 attempts. Network exceptions are retried for GET and PUT only, because a retried POST could create a duplicate.
 - The base URL must be HTTPS. HTTP is allowed for loopback only.
 
+### Terraform parity and the v3 endpoints
+
+On-call and alerting resources mirror the [Terraform provider](https://github.com/incident-io/terraform-provider-incident) v7, with the same split, property names (in camelCase) and validation. Where Terraform uses endpoints that aren't in incident.io's public OpenAPI spec, we use the same ones:
+
+| Resource | Endpoint | Why |
+|---|---|---|
+| `Schedule`, `ScheduleRotation` | `/v3/schedules`, `/v3/schedules/{id}/rotations` | The documented v2 API stores every rotation inline with its version history. A stateless full-replace `PUT` from Bicep could rewrite that history. v3 makes each rotation separately addressable and adds `rollout`, `concurrent_shifts` and `rank`. |
+| `AlertSource` | `/v3/alert_sources` | Terraform's alert source shape; attributes are managed separately |
+
+The Terraform provider's schema file (`public-schema-v3-including-secret-endpoints.json`, MIT licensed) is the reference for these payloads. The risk is tracked in `vulnerabilities.md`.
+
+### Engine bindings and shorthands
+
+Alert sources, maintenance windows and escalation paths share incident.io's engine building blocks: parameter bindings, conditions and condition groups. They're modelled once in `Engine.cs`. Bicep accepts Terraform's shorthands (`valueLiteral`, `valueReference`, `values`, `expressionRef`). `EngineBindingApiConverter` expands them into the API shape. It's registered **only** on the API serializer, so the SDK's gRPC serialization of the same classes is unaffected.
+
+### Escalation paths: sequences ⇄ tree
+
+The API stores an escalation path as a recursive tree, where an `if_else` node holds its `then_path` and `else_path` inline. Bicep uses Terraform v7's flat map of named `sequences`, in which branches reference other sequences by key. That removes the nesting limit and keeps every sequence at the same depth. `EscalationPathSequences`:
+
+- **Unflattens** sequences into the tree, deriving stable node IDs (`<sequence>/<index>`) for nodes without an `id`.
+- **Validates** with Terraform's rules and wording, and reports every problem at once.
+- **Flattens** the tree back for `existing`, recovering sequence names from derived node IDs.
+
+`branch.if` maps to engine conditions exactly as Terraform does: `escalation.working_hours["<id>"] is_active` and `escalation.priority one_of`.
+
+### Skipping no-op writes
+
+Most `PUT`s are harmless to repeat. A rotation `PUT` with `rollout` is not: it schedules a new version of the rotation. Handlers can opt into `SkipUnchangedUpdates`. The handler compares the payload with the live item (`JsonCompare.IsSubset`: objects as subsets, numbers numerically, timestamps by instant) and skips the write when nothing differs. `ScheduleRotation` also compares working intervals as a set.
+
 ### Not implemented (deliberately)
+
+- **Dashboard locking (`unlock_in_dashboard`).** Terraform claims resources via `/v2/managed_resources` with an `incident.io/terraform/version` annotation, which labels them as managed by Terraform. We haven't found a documented way to claim a resource as managed by something else. Bicep-managed resources therefore stay editable in the dashboard, and the next deploy reverts manual edits.
 
 - **Delete.** The SDK supports it, but `bicep local-deploy` doesn't remove resources that were taken out of a template. Deleting incident.io config (such as custom fields) can also destroy historical incident data.
 - **What-if.** `Preview()` returns the desired state only, because the CLI exposes no what-if for local-deploy.

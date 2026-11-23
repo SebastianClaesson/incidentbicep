@@ -29,3 +29,6 @@ token.txt
 apikey.txt
 secrets.txt
 secrets.json
+
+# Personal Claude notes (session handoff)
+CLAUDE.local.md
