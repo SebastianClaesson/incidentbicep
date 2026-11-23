@@ -29,7 +29,24 @@
 ### 5. Experimental Bicep features (Low risk, informational)
 **What:** `localDeploy` and the extensibility SDK are experimental. The protocol and SDK may change. Pin the SDK version and re-test after Bicep upgrades.
 
-### 6. Mock server (None in production)
+### 6. Undocumented API endpoints (Medium risk)
+**What:** `Schedule`, `ScheduleRotation` and `AlertSource` use `/v3/schedules`, `/v3/schedules/{id}/rotations` and `/v3/alert_sources`. These aren't in incident.io's public API documentation. The official Terraform provider uses them, from a schema file named `public-schema-v3-including-secret-endpoints.json`.
+
+**Mitigation:** These are the endpoints incident.io's own provider depends on, so in practice they're maintained. The shapes follow that schema exactly.
+
+**What you should do:** Re-test these resources against a non-production workspace after incident.io releases, and pin a known-good version of this extension. Undocumented endpoints can change without the notice documented ones get.
+
+### 7. Alert source secret token in outputs (Medium risk)
+**What:** `AlertSource.secretToken` is returned as a sensitive output so you can wire it into the system that sends alerts. Bicep treats it as secure, but anything that outputs it, or logs a deployment with it, exposes the token.
+
+**What you should do:** Pass it straight to its destination (for example a Key Vault secret or a pipeline secret) using `@secure()` outputs. Don't print it.
+
+### 8. Rotation rollouts not yet verified against the live API (Medium risk, operational)
+**What:** We skip rotation writes when nothing changed, because a write with `rollout` schedules a new rotation version. That logic was tested against the local mock only. It hasn't yet been checked against how the real API reports a pending phased rollout.
+
+**What you should do:** In a test workspace, deploy a rotation change with `rollout: 'after_current_shift'`, then redeploy unchanged and confirm no second version is scheduled.
+
+### 9. Mock server (None in production)
 **What:** `tools/mock-server` binds to `127.0.0.1` only, accepts a hard-coded test key, and has no persistence. It's for local testing only. Never expose it.
 
 ## Resolved / Mitigated

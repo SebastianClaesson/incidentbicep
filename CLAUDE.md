@@ -14,7 +14,7 @@ A Bicep extension that wraps the incident.io REST API, so incident.io configurat
 
 - API docs: https://api-docs.incident.io/
 - OpenAPI spec: https://api.incident.io/v1/openapiV3.json (the source of truth for payload shapes; check create *and* update payloads)
-- Terraform provider (useful prior art): https://github.com/incident-io/terraform-provider-incident
+- Terraform provider: https://github.com/incident-io/terraform-provider-incident. **Parity target:** match its v7 resources, property names (camelCase) and validation. Its `internal/apischema/public-schema-v3-including-secret-endpoints.json` includes endpoints missing from the public spec (v3 schedules/rotations, v3 alert sources, managed_resources).
 
 ## Bicep extension references
 

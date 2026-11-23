@@ -33,7 +33,8 @@ public abstract class IncidentIoResourceHandlerBase<TProperties, TIdentifiers>
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new EngineBindingApiConverter() }
     };
 
     /// <summary>API collection path without leading slash, e.g. "v1/severities".</summary>
@@ -76,25 +77,35 @@ public abstract class IncidentIoResourceHandlerBase<TProperties, TIdentifiers>
             using var client = new IncidentIoClient(request.Config);
             var properties = request.Properties;
 
+            var path = GetCollectionPath(properties);
             var existing = await FindExisting(client, properties, cancellationToken);
             var payload = await BuildPayload(client, properties, existing, cancellationToken);
 
-            JsonElement response;
+            JsonElement item;
             if (existing is { } current)
             {
                 EnsureCreateOnlyFieldsUnchanged(payload, current);
                 foreach (var field in CreateOnlyFields)
                     payload.Remove(field);
 
-                var id = current.GetProperty("id").GetString()!;
-                response = await client.PutAsync($"{ApiPath}/{Uri.EscapeDataString(id)}", payload, cancellationToken);
+                if (SkipUnchangedUpdates && IsUpToDate(payload, current))
+                {
+                    // Nothing to change: skip the write so redeploys don't create new versions or audit noise.
+                    item = current;
+                }
+                else
+                {
+                    var id = current.GetProperty("id").GetString()!;
+                    var response = await client.PutAsync($"{path}/{Uri.EscapeDataString(id)}", WrapRequest(payload, properties, isUpdate: true), cancellationToken);
+                    item = response.GetProperty(ItemKey);
+                }
             }
             else
             {
-                response = await client.PostAsync(ApiPath, payload, cancellationToken);
+                var response = await client.PostAsync(path, WrapRequest(payload, properties, isUpdate: false), cancellationToken);
+                item = response.GetProperty(ItemKey);
             }
 
-            var item = response.GetProperty(ItemKey);
             await AfterWrite(client, properties, item, cancellationToken);
             return GetResponse(request);
         });
@@ -117,6 +128,30 @@ public abstract class IncidentIoResourceHandlerBase<TProperties, TIdentifiers>
     }
 
     // ──────────────── Extension points ────────────────
+
+    /// <summary>
+    /// Collection path for these identifiers. Defaults to <see cref="ApiPath"/>; override for resources
+    /// nested under a parent, e.g. "v3/schedules/{scheduleId}/rotations".
+    /// </summary>
+    protected virtual string GetCollectionPath(TIdentifiers identifiers) => ApiPath;
+
+    /// <summary>
+    /// JSON key the request body is wrapped in, for endpoints that expect e.g. { "schedule": { ... } }. Null = unwrapped.
+    /// </summary>
+    protected virtual string? RequestWrapperKey => null;
+
+    /// <summary>Wraps the payload for the request. Override to add top-level fields (e.g. a rotation's rollout).</summary>
+    protected virtual JsonObject WrapRequest(JsonObject payload, TProperties properties, bool isUpdate)
+        => RequestWrapperKey is { } key ? new JsonObject { [key] = payload } : payload;
+
+    /// <summary>
+    /// When true, an update is skipped if the existing item already matches the payload (see <see cref="IsUpToDate"/>).
+    /// Opt-in: required where a write has side effects even when nothing changed (rotation rollouts).
+    /// </summary>
+    protected virtual bool SkipUnchangedUpdates => false;
+
+    /// <summary>Default: every field in the payload equals the existing item's value (see <see cref="JsonCompare"/>).</summary>
+    protected virtual bool IsUpToDate(JsonObject payload, JsonElement existing) => JsonCompare.IsSubset(payload, existing);
 
     /// <summary>
     /// Builds the JSON body for POST/PUT. Default: serialize the model to snake_case and drop read-only (output) properties.
@@ -151,7 +186,7 @@ public abstract class IncidentIoResourceHandlerBase<TProperties, TIdentifiers>
 
     protected async Task<JsonElement?> FindExisting(IncidentIoClient client, TIdentifiers identifiers, CancellationToken cancellationToken)
     {
-        var items = await client.ListAsync(ApiPath, CollectionKey, GetListQuery(identifiers), PageSize, cancellationToken);
+        var items = await client.ListAsync(GetCollectionPath(identifiers), CollectionKey, GetListQuery(identifiers), PageSize, cancellationToken);
         var matches = items.Where(i => IsMatch(i, identifiers)).ToList();
 
         return matches.Count switch
